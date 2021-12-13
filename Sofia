@@ -1,0 +1,296 @@
+---
+title: "CBioPortal Project"
+author: "Sofia Ievleva"
+date: "12/12/2021"
+output: Rmd_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(cgdsr)
+library(tidyverse)
+library(kableExtra)
+library(pheatmap)
+library(janitor)
+
+mycgds <- CGDS("http://www.cbioportal.org/")
+show(mycgds)
+
+studies <- getCancerStudies(mycgds)
+glimpse(studies)
+
+#opening Intrahepatic Cholangiocarcinoma studies
+
+getCancerStudies(mycgds) %>% 
+  filter(str_detect(name, "Intrahepatic Cholangiocarcinoma")) %>% 
+  select(cancer_study_id, name) %>% 
+  kbl() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+getCancerStudies(mycgds) %>% 
+  filter(str_detect(name, "Intrahepatic Cholangiocarcinoma")) %>% 
+  mutate(n = as.integer(str_extract(description, "[0-9]+"))) %>% 
+  select(cancer_study_id, n, name) %>% 
+  arrange(n) %>% 
+  kbl() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+ihch_study <- "ihch_msk_2021"
+
+getCaseLists(mycgds, cancerStudy=ihch_study) %>% 
+  filter(case_list_name == "Samples with mutation data") ->
+  ihch_caselists
+
+getGeneticProfiles(mycgds, ihch_study) %>% 
+  filter(genetic_profile_name == "Mutations") %>% 
+  pull(genetic_profile_id) ->
+  ihch_mutations_profile
+
+# changing the "top" mutated genes 
+
+ihch_genes <- c("IDH1", "ARID1A", "BAP1", "TP53", "PBRM1", "KRAS")
+
+get_muts <- function(x, genes, ...) {
+  
+  muts <- getProfileData(x, genes, ...)
+  is.na(muts) <- (muts == "NaN")
+  muts[is.na(muts)] <- 0
+  muts[muts != 0] <- 1  
+  rn <- rownames(muts)
+  muts <- data.frame(lapply(muts, as.integer))
+  rownames(muts) <- rn
+  return(muts[, genes])
+}
+
+muts <- get_muts(mycgds, 
+                 ihch_genes, 
+                 geneticProfiles=ihch_mutations_profile, 
+                 caseList=ihch_caselists$case_list_id)
+
+
+muts %>% 
+  filter(rowSums(.) > 0) %>%
+  t() %>%
+  kbl() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+with(muts, table("IDH1", "ARID1A")) %>% fisher.test
+
+{r, oncoprint, echo=FALSE}
+pheatmap(t(data.matrix(muts)), col=c("white", "darkred"), cluster_rows=FALSE,
+         clustering_distance_cols="manhattan", clustering_method="ward.D2", legend=FALSE)
+
+message("Chi-squared p-value:", appendLF = FALSE)
+muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  chisq.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+message("Fisher's exact test p-value:", appendLF = FALSE)
+muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  fisher.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+# checking nothcott data
+
+northcott <- "ihch_dkfz_2017"
+
+getCaseLists(mycgds, northcott) %>% 
+  filter(case_list_name == "Samples with mutation data") ->
+  northcott_caselists 
+
+getGeneticProfiles(mycgds, northcott) %>% 
+  filter(genetic_profile_name == "Mutations") %>% 
+  pull(genetic_profile_id) ->
+  northcott_mutations_profile
+
+northcott_muts <- get_muts(mycgds,      
+                           ihch_genes,    
+                           northcott_mutations_profile, 
+                           northcott_caselists$case_list_id)
+
+colSums(northcott_muts)
+
+message("Chi-squared p-value (Northcott):", appendLF = FALSE)
+northcott_muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  chisq.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+message("Fisher's exact test p-value (Northcott):", appendLF = FALSE)
+northcott_muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  fisher.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+pheatmap(t(data.matrix(northcott_muts)), col=c("white", "darkred"), cluster_rows=FALSE,
+         clustering_distance_cols="manhattan", clustering_method="ward.D2", legend=FALSE)
+
+northcott_caselists %>% 
+  pull(case_ids) %>% 
+  str_split(pattern=" ") %>% 
+  getElement(1) -> 
+  northcott_cases
+
+ihch_caselists %>%
+  pull(case_ids) %>% 
+  str_split(pattern=" ") %>% 
+  getElement(1) ->
+  stjude_cases
+
+intersect(northcott_cases, stjude_cases)
+
+northcott_only <- setdiff(northcott_cases, stjude_cases)
+
+northonly_muts <- get_muts(mycgds,      
+                           ihch_genes,   
+                           geneticProfiles=northcott_mutations_profile,
+                           cases=northcott_only)
+
+message("Chi-squared p-value (Northcott ONLY):", appendLF = FALSE)
+northonly_muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  chisq.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+message("Fisher's exact test p-value (Northcott ONLY):", appendLF = FALSE)
+northonly_muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  fisher.test(simulate.p.value = TRUE) %>% 
+  getElement("p.value")
+
+
+muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  fisher.test() %>% 
+  getElement("estimate") -> 
+  StJ_estimate
+
+northonly_muts %>% 
+  tabyl(IDH1, ARID1A) %>% 
+  fisher.test() %>% 
+  getElement("estimate") ->
+  northcott_estimate
+
+#Co-occurrence odds ratio (St. Jude cases): 1.459, Co-occurrence odds ratio (DKFZ cases): 15.606 
+message("Co-occurrence odds ratio (St. Jude cases): ", round(StJ_estimate, 3))
+message("Co-occurrence odds ratio (DKFZ cases): ", round(northcott_estimate, 3))
+#estimate of StJ/Northcott is 0x because StJ is much smaller 
+message("Effect size inflation, St. Jude vs. Northcott: ",
+        round(StJ_estimate / northcott_estimate), "x")
+#So I will reverse the ratio, now the effect size is 11x
+message("Effect size inflation, St. Jude vs. Northcott: ",
+        round(northcott_estimate / StJ_estimate), "x")
+
+neither <- nrow(subset(muts, IDH1 == 0 & ARID1A == 0))
+IDH1 <- nrow(subset(muts, IDH1 == 1 & ARID1A == 0))
+ARID1A <- nrow(subset(muts, IDH1 == 0 & ARID1A == 1))
+both <- nrow(subset(muts, IDH1 == 1 & ARID1A == 1))
+
+a <- IDH1
+b <- ARID1A 
+
+p_one <- function(x) dbeta(x, (a + b), (both + neither))
+p_both <- function(x) dbeta(x, both, (a + b + neither))
+p_both_if_not_one <- function(x) dbeta(x,  both, neither)
+
+plot(p_one, main="Pr(A|B & !(A & B))")
+plot(p_both, main="Pr(A & B)")
+plot(p_both_if_not_one, main="Pr( (A & B) | (A + B != 1))")
+
+sim2x2 <- function(n, neither, a, b, both) {
+  
+  p_one <- rbeta(1, (a + b), (both + neither))
+  p_both <- rbeta(1, both, neither)
+  p_a <- rbeta(1, a, b)
+  
+  n_a_b <- rbinom(1, n, p_one)
+  n_neither_both <- n - n_a_b
+  n_both <- rbinom(1, n_neither_both, p_both)
+  n_neither <- n_neither_both - n_both
+  n_a <- rbinom(1, n_a_b, p_a)
+  n_b <- n_a_b - n_a
+  as.table(matrix(c(n_neither, n_a, n_b, n_both), nrow=2))
+  
+}
+
+a <- IDH1
+b <- ARID1A
+
+sim2x2(n=nrow(muts), neither, a, b, both)
+
+simFisher <- function(n, neither, a, b, both) fisher.test(sim2x2(n, neither, a, b, both))
+  
+simFetP <- function(n) simFisher(n, neither, a, b, both)$p.value
+
+powerN <- function(n, alpha=0.05) {
+  res <- table(replicate(1000, simFetP(n=n)) < alpha)
+  res["TRUE"] / sum(res)
+}
+
+# Question 1 - Power at alpha = 0.05 with n = 412: 29.6%
+for (N in c(10, 30, 50, 100, 300, 500)) {
+  message("Power at alpha = 0.05 with n = ", N, ": ", powerN(N) * 100, "%")
+}
+message("Power at alpha = 0.05 with n = ", 412, ": ", powerN(412) * 100, "%")
+
+# Questions 2 - How does that compare to `power.prop.test` with p1 = (neither+both)/(all), p2 = (CTNNB1only + DDX3Xonly)/(all), and n=37? I have IDH1 instead of CTNNB1 and ARID1A instead of DDX3. 
+Neither+both = 0 + (85+67) = 152/412=0.36893204 - p1; p2 = (239 + 21)/412 = 260/412=0.63106796
+#p1=0.36893204, p2=0.63106796, Seems to be a giant overestimate compared to the Fischer test
+
+
+shrinkOR <- function(n, pseudo=2) {
+    res <- sim2x2(n, neither, a, b, both) + pseudo
+    odds <- (res[1,1] * res[2,2]) / (res[1,2] * res[2,1])
+    return(odds)
+}
+
+OR0 <- function(n) replicate(1000, shrinkOR(n, pseudo=1e-6))
+
+for (N in c(10, 20, 40, 80)) {
+  hist(OR0(n=N), xlab="Estimate", main=paste("Near-raw odds ratio distribution with N =", N))
+}
+
+ORs <- function(n) replicate(1000, shrinkOR(n))
+
+for (N in c(10, 20, 40, 80)) {
+  hist(ORs(n=N), xlab="Estimate", main=paste("Shrunken odds ratio distribution with N =", N))
+}
+
+#Run `with(muts, table(CTNNB1, DDX3X)) %>% fisher.test`. What does the 95% CI represent?
+with(muts, table(IDH1, ARID1A)) %>% fisher.test
+#output
+data:  .
+p-value = 0.2199
+alternative hypothesis: true odds ratio is not equal to 1
+95 percent confidence interval:
+ 0.783789 2.644760
+sample estimates:
+odds ratio 
+  1.458724 
+#It seems to be a decent representation of the population
